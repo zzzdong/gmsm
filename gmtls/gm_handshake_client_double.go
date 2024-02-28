@@ -190,6 +190,7 @@ func (hs *clientHandshakeStateGM) doFullHandshake() error {
 
 	hs.finishedHash.Write(certMsg.marshal())
 
+	encipherCertIdx := -1
 	if c.handshakes == 0 {
 		// If this is the first handshake on a connection, process and
 		// (optionally) verify the server's certificates.
@@ -207,18 +208,13 @@ func (hs *clientHandshakeStateGM) doFullHandshake() error {
 				return fmt.Errorf("tls: pubkey type of cert is error, expect sm2.publicKey")
 			}
 
-			//cert[0] is for signature while cert[1] is for encipher, refer to  GMT0024
-			//check key usage
-			switch i {
-			case 0:
-				if cert.KeyUsage == 0 || (cert.KeyUsage&(x509.KeyUsageDigitalSignature|cert.KeyUsage&x509.KeyUsageContentCommitment)) == 0 {
-					c.sendAlert(alertInsufficientSecurity)
-					return fmt.Errorf("tls: the keyusage of cert[0] does not exist or is not for KeyUsageDigitalSignature/KeyUsageContentCommitment, value:%d", cert.KeyUsage)
-				}
-			case 1:
-				if cert.KeyUsage == 0 || (cert.KeyUsage&(x509.KeyUsageDataEncipherment|x509.KeyUsageKeyEncipherment|x509.KeyUsageKeyAgreement)) == 0 {
-					c.sendAlert(alertInsufficientSecurity)
-					return fmt.Errorf("tls: the keyusage of cert[1] does not exist or is not for KeyUsageDataEncipherment/KeyUsageKeyEncipherment/KeyUsageKeyAgreement, value:%d", cert.KeyUsage)
+			// signature must before encipher, refer to GMT0024
+			// check key usage
+			if cert.KeyUsage&(x509.KeyUsageDataEncipherment|x509.KeyUsageKeyEncipherment|x509.KeyUsageKeyAgreement) != 0 {
+				encipherCertIdx = i
+			} else if cert.KeyUsage&(x509.KeyUsageDigitalSignature|cert.KeyUsage&x509.KeyUsageContentCommitment) != 0 {
+				if encipherCertIdx > -1 {
+					return fmt.Errorf("tls: the keyusage of cert[%d] for KeyUsageDigitalSignature/KeyUsageContentCommitment is after cert[%d]", i, encipherCertIdx)
 				}
 			}
 
@@ -291,7 +287,7 @@ func (hs *clientHandshakeStateGM) doFullHandshake() error {
 
 	keyAgreement := hs.suite.ka(c.vers)
 	if ka, ok := keyAgreement.(*eccKeyAgreementGM); ok {
-		ka.encipherCert = c.peerCertificates[1]
+		ka.encipherCert = c.peerCertificates[encipherCertIdx]
 	}
 
 	skx, ok := msg.(*serverKeyExchangeMsg)
@@ -346,7 +342,7 @@ func (hs *clientHandshakeStateGM) doFullHandshake() error {
 		}
 	}
 
-	preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hs.hello, c.peerCertificates[1])
+	preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hs.hello, c.peerCertificates[encipherCertIdx])
 	if err != nil {
 		c.sendAlert(alertInternalError)
 		return err
